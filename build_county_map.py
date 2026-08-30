@@ -748,6 +748,7 @@ def build_dashboard(
     fig,
     statewide,
     metadata,
+    county_stats,
 ):
     OUTPUT_DIR.mkdir(
         parents=True,
@@ -764,6 +765,136 @@ def build_dashboard(
             "displayModeBar": False,
         },
     )
+
+    region_data = {
+        "Statewide": {
+            "display": "Statewide",
+            "total": int(statewide["total"]),
+            "dem": int(statewide["dem"]),
+            "dem_pct": float(statewide["dem_pct"]),
+            "rep": int(statewide["rep"]),
+            "rep_pct": float(statewide["rep_pct"]),
+            "third": int(statewide["third"]),
+            "third_pct": float(statewide["third_pct"]),
+            "margin_party": statewide["margin_party"],
+            "margin_count": int(statewide["margin_count"]),
+            "margin_pct": float(statewide["margin_pct"]),
+        }
+    }
+
+    for _, row in county_stats.sort_values("county").iterrows():
+        county_name = str(row["county"])
+        margin = int(row["dem_rep_margin"])
+
+        if margin > 0:
+            margin_party = "Democratic"
+        elif margin < 0:
+            margin_party = "Republican"
+        else:
+            margin_party = "Even"
+
+        region_data[county_name] = {
+            "display": f"{county_name} County",
+            "total": int(row["total"]),
+            "dem": int(row["dem"]),
+            "dem_pct": float(row["dem_pct"]),
+            "rep": int(row["rep"]),
+            "rep_pct": float(row["rep_pct"]),
+            "third": int(row["third_party_unaffiliated"]),
+            "third_pct": float(row["third_party_unaffiliated_pct"]),
+            "margin_party": margin_party,
+            "margin_count": abs(margin),
+            "margin_pct": abs(float(row["dem_rep_margin_pct"])),
+        }
+
+    region_data_json = json.dumps(
+        region_data,
+        ensure_ascii=False,
+    )
+
+    selector_options = "\n".join(
+        f'<option value="{name}">{data["display"]}</option>'
+        for name, data in region_data.items()
+    )
+
+    selector_css = """
+    .region-selector {
+        margin: 0 0 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .region-selector label {
+        font-weight: 700;
+    }
+
+    .region-selector select {
+        min-height: 44px;
+        min-width: 220px;
+        padding: 8px 36px 8px 12px;
+        border: 1px solid #c8c8c8;
+        border-radius: 8px;
+        background: #fff;
+        font: inherit;
+        font-size: 16px;
+    }
+    """
+
+    selector_script = """
+<script>
+(() => {
+    const regionData = __REGION_DATA__;
+    const selector = document.getElementById("region-select");
+    const cards = document.querySelectorAll(".summary-card");
+
+    if (!selector || cards.length < 5) return;
+
+    const numberFormat = new Intl.NumberFormat("en-US");
+
+    function updateCards() {
+        const data = regionData[selector.value];
+        if (!data) return;
+
+        const [registered, dem, rep, third, edge] = cards;
+
+        registered.querySelector(".summary-value").textContent =
+            numberFormat.format(data.total);
+        registered.querySelector(".summary-detail").textContent =
+            data.display;
+
+        dem.querySelector(".summary-value").textContent =
+            numberFormat.format(data.dem);
+        dem.querySelector(".summary-detail").textContent =
+            `${data.dem_pct.toFixed(2)}% of voters`;
+
+        rep.querySelector(".summary-value").textContent =
+            numberFormat.format(data.rep);
+        rep.querySelector(".summary-detail").textContent =
+            `${data.rep_pct.toFixed(2)}% of voters`;
+
+        third.querySelector(".summary-value").textContent =
+            numberFormat.format(data.third);
+        third.querySelector(".summary-detail").textContent =
+            `${data.third_pct.toFixed(2)}% of voters`;
+
+        edge.querySelector(".summary-label").textContent =
+            data.display === "Statewide"
+                ? "Statewide registration edge"
+                : `${data.display} registration edge`;
+
+        edge.querySelector(".summary-value").textContent =
+            data.margin_party;
+
+        edge.querySelector(".summary-detail").textContent =
+            `${numberFormat.format(data.margin_count)} voters \u00b7 ${data.margin_pct.toFixed(2)} points`;
+    }
+
+    selector.addEventListener("change", updateCards);
+})();
+</script>
+""".replace("__REGION_DATA__", region_data_json)
 
     html = f"""
 <!DOCTYPE html>
@@ -999,6 +1130,7 @@ body {{
 
 }}
 
+{selector_css}
 </style>
 
 </head>
@@ -1025,6 +1157,13 @@ body {{
 
     </header>
 
+
+    <section class="region-selector" aria-label="Registration area">
+        <label for="region-select">View registration for:</label>
+        <select id="region-select">
+            {selector_options}
+        </select>
+    </section>
 
     <section class="summary-grid">
 
@@ -1192,6 +1331,8 @@ body {{
 
 </main>
 
+{selector_script}
+
 </body>
 
 </html>
@@ -1255,10 +1396,14 @@ if __name__ == "__main__":
         fig,
         statewide,
         metadata,
+        merged,
     )
 
     print(
         "\nDone."
     )
+
+
+
 
 
