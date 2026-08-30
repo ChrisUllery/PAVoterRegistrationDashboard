@@ -1108,7 +1108,7 @@ body {{
 
             <div class="summary-detail">
                 {statewide["margin_count"]:,} voters
-                Â· {statewide["margin_pct"]:.2f} points
+                &middot; {statewide["margin_pct"]:.2f} points
             </div>
 
         </div>
@@ -1260,4 +1260,5 @@ if __name__ == "__main__":
     print(
         "\nDone."
     )
+
 
