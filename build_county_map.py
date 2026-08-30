@@ -694,6 +694,7 @@ def build_map(merged):
 
     fig.update_layout(
         height=620,
+        dragmode=False,
 
         margin=dict(
             l=0,
@@ -1259,3 +1260,4 @@ if __name__ == "__main__":
     print(
         "\nDone."
     )
+
