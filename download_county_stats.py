@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import pandas as pd
 import requests
@@ -29,7 +30,15 @@ def download_workbook():
 
     print("Downloading current PA county voter statistics...")
 
-    response = requests.get(SOURCE_URL, timeout=60)
+    response = requests.get(
+        SOURCE_URL,
+        params={"cache_bust": int(time.time())},
+        headers={
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+        timeout=60,
+    )
     response.raise_for_status()
 
     OUTPUT_FILE.write_bytes(response.content)

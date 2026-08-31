@@ -14,6 +14,8 @@ RAW_FILE = Path("data/raw/currentvotestats.xlsx")
 
 PROCESSED_DIR = Path("data/processed")
 
+HISTORY_DIR = Path("data/history")
+
 OUTPUT_FILE = (
     PROCESSED_DIR
     / "county_stats_current.csv"
@@ -238,6 +240,72 @@ def validate_county_stats(df):
 
 
 # ---------------------------------------------------------
+# Save dated historical snapshot
+# ---------------------------------------------------------
+
+def save_history_snapshot(
+    df,
+    source_date,
+):
+    HISTORY_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source_date_key = source_date.strftime(
+        "%Y-%m-%d"
+    )
+
+    history_file = (
+        HISTORY_DIR
+        / f"county_stats_{source_date_key}.csv"
+    )
+
+    history_metadata_file = (
+        HISTORY_DIR
+        / f"county_stats_{source_date_key}_metadata.json"
+    )
+
+    if history_file.exists():
+        print(
+            f"Historical snapshot already exists: "
+            f"{history_file}"
+        )
+        return
+
+    df.to_csv(
+        history_file,
+        index=False,
+    )
+
+    month = source_date.strftime("%b.")
+    day = source_date.day
+    year = source_date.year
+
+    metadata = {
+        "source_date": source_date_key,
+        "source_date_display": f"{month} {day}, {year}",
+        "county_count": len(df),
+        "source": "Pennsylvania Department of State",
+    }
+
+    history_metadata_file.write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    print(
+        f"Saved historical snapshot: "
+        f"{history_file}"
+    )
+
+    print(
+        f"Saved historical metadata: "
+        f"{history_metadata_file}"
+    )
+
+
+# ---------------------------------------------------------
 # Save cleaned county data
 # ---------------------------------------------------------
 
@@ -299,6 +367,11 @@ if __name__ == "__main__":
 
     validate_county_stats(
         county_stats
+    )
+
+    save_history_snapshot(
+        county_stats,
+        source_date,
     )
 
     save_county_stats(

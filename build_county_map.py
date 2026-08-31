@@ -24,6 +24,10 @@ METADATA_FILE = Path(
     "data/processed/county_stats_metadata.json"
 )
 
+PRESIDENTIAL_RESULTS_FILE = Path(
+    "data/reference/presidential_2024_county_results.csv"
+)
+
 RAW_DIR = Path("data/raw")
 
 SHAPE_ZIP = RAW_DIR / "cb_2025_us_county_500k.zip"
@@ -201,6 +205,82 @@ def load_stats():
     )
 
     return stats
+
+
+# ---------------------------------------------------------
+# Load 2024 presidential county results
+# ---------------------------------------------------------
+
+def load_presidential_results():
+    print(
+        "\nLoading 2024 presidential county results..."
+    )
+
+    if not PRESIDENTIAL_RESULTS_FILE.exists():
+        raise FileNotFoundError(
+            "Presidential results file not found: "
+            f"{PRESIDENTIAL_RESULTS_FILE}"
+        )
+
+    presidential = pd.read_csv(
+        PRESIDENTIAL_RESULTS_FILE
+    )
+
+    required_columns = {
+        "county",
+        "harris_votes",
+        "trump_votes",
+        "oliver_votes",
+        "stein_votes",
+        "total_presidential_votes",
+        "winner",
+        "winner_votes",
+        "margin_votes",
+        "winner_pct",
+        "margin_pct",
+    }
+
+    missing_columns = (
+        required_columns
+        - set(presidential.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Presidential results file is missing "
+            "required columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    presidential["county_key"] = (
+        presidential["county"]
+        .apply(normalize_county_name)
+    )
+
+    duplicate_keys = presidential[
+        presidential["county_key"].duplicated(
+            keep=False
+        )
+    ]
+
+    if not duplicate_keys.empty:
+        raise ValueError(
+            "Duplicate county keys found in "
+            "presidential results."
+        )
+
+    if len(presidential) != 67:
+        raise ValueError(
+            "Expected 67 presidential-result counties, "
+            f"found {len(presidential)}."
+        )
+
+    print(
+        "2024 presidential-result counties: "
+        f"{len(presidential)}"
+    )
+
+    return presidential
 
 
 # ---------------------------------------------------------
@@ -443,6 +523,102 @@ def merge_data(
 
     merged["display_county"] = (
         merged["NAME"]
+    )
+
+    return merged
+
+
+# ---------------------------------------------------------
+# Merge 2024 presidential results
+# ---------------------------------------------------------
+
+def merge_presidential_results(
+    merged,
+    presidential,
+):
+    print(
+        "\nMatching 2024 presidential results "
+        "to dashboard counties..."
+    )
+
+    dashboard_keys = set(
+        merged["county_key"]
+    )
+
+    presidential_keys = set(
+        presidential["county_key"]
+    )
+
+    missing_results = (
+        dashboard_keys
+        - presidential_keys
+    )
+
+    extra_results = (
+        presidential_keys
+        - dashboard_keys
+    )
+
+    if missing_results:
+        print(
+            "\nDashboard counties missing "
+            "presidential results:"
+        )
+
+        for key in sorted(missing_results):
+            county_name = merged.loc[
+                merged["county_key"] == key,
+                "display_county",
+            ].iloc[0]
+
+            print(
+                f"  - {county_name}"
+            )
+
+    if extra_results:
+        print(
+            "\nPresidential-result counties "
+            "not found in dashboard data:"
+        )
+
+        for key in sorted(extra_results):
+            county_name = presidential.loc[
+                presidential["county_key"] == key,
+                "county",
+            ].iloc[0]
+
+            print(
+                f"  - {county_name}"
+            )
+
+    if missing_results or extra_results:
+        raise ValueError(
+            "Presidential county matching failed. "
+            "Dashboard was not built."
+        )
+
+    presidential_for_merge = (
+        presidential.drop(
+            columns=["county"]
+        )
+    )
+
+    merged = merged.merge(
+        presidential_for_merge,
+        on="county_key",
+        how="left",
+        validate="one_to_one",
+    )
+
+    if merged["winner"].isna().any():
+        raise ValueError(
+            "One or more counties are missing "
+            "presidential results after merge."
+        )
+
+    print(
+        "All 67 counties matched to "
+        "2024 presidential results."
     )
 
     return merged
@@ -812,6 +988,14 @@ def build_dashboard(
             "margin_pct": abs(float(row["dem_rep_margin_pct"])),
             "signed_margin_pct": float(
                 row["dem_rep_margin_pct"]
+            ),
+            "presidential_winner": str(row["winner"]),
+            "presidential_margin_votes": int(row["margin_votes"]),
+            "presidential_margin_pct": float(row["margin_pct"]),
+            "trump_votes": int(row["trump_votes"]),
+            "harris_votes": int(row["harris_votes"]),
+            "total_presidential_votes": int(
+                row["total_presidential_votes"]
             ),
         }
 
@@ -1215,6 +1399,25 @@ def build_dashboard(
         );
     }
 
+    function presidentialWinnerName(winner) {
+        if (winner === "Trump") {
+            return "Donald Trump";
+        }
+
+        if (winner === "Harris") {
+            return "Kamala Harris";
+        }
+
+        return String(winner);
+    }
+
+    function shortPresidentialResult(data) {
+        return (
+            `${data.presidential_winner} +` +
+            `${Number(data.presidential_margin_pct).toFixed(2)}`
+        );
+    }
+
     function maxBy(metric) {
         return countyEntries.reduce(
             (best, current) =>
@@ -1331,6 +1534,11 @@ def build_dashboard(
         title.textContent =
             `${data.display} analysis`;
 
+        const presidentialWinner =
+            presidentialWinnerName(
+                data.presidential_winner
+            );
+
         const text =
             `${data.display} has ` +
             `${numberFormat.format(data.total)} ` +
@@ -1343,7 +1551,13 @@ def build_dashboard(
             `and ${numberFormat.format(data.third)} ` +
             `voters (${Number(data.third_pct).toFixed(2)}%) ` +
             `are registered with a third party or are ` +
-            `unaffiliated. ${edgeSentence(data)}`;
+            `unaffiliated. ${edgeSentence(data)} ` +
+            `${presidentialWinner} won ${data.display} ` +
+            `in the 2024 presidential election by ` +
+            `${numberFormat.format(data.presidential_margin_votes)} ` +
+            `votes, a margin of ` +
+            `${Number(data.presidential_margin_pct).toFixed(2)} ` +
+            `percentage points.`;
 
         summary.textContent = text;
 
@@ -1382,24 +1596,28 @@ def build_dashboard(
             <ul class="analysis-highlights">
                 <li>
                     <strong>Registered voters:</strong>
-                    ${ordinal(totalRank)} of 67
+                    ${ordinal(totalRank)}-largest electorate
+                    in Pennsylvania
                 </li>
                 <li>
                     <strong>Democratic share:</strong>
-                    ${ordinal(demRank)} of 67
+                    ${ordinal(demRank)}-highest among
+                    Pennsylvania's 67 counties
                 </li>
                 <li>
                     <strong>Republican share:</strong>
-                    ${ordinal(repRank)} of 67
+                    ${ordinal(repRank)}-highest among
+                    Pennsylvania's 67 counties
                 </li>
                 <li>
                     <strong>Third-party/unaffiliated share:</strong>
-                    ${ordinal(thirdRank)} of 67
+                    ${ordinal(thirdRank)}-highest among
+                    Pennsylvania's 67 counties
                 </li>
                 <li>
-                    <strong>D-R margin order:</strong>
-                    ${ordinal(balanceRank)} of 67
-                    from most Democratic
+                    <strong>Registration margin:</strong>
+                    ${ordinal(balanceRank)}-most Democratic
+                    among Pennsylvania's 67 counties
                 </li>
             </ul>
         `;
@@ -1432,12 +1650,12 @@ def build_dashboard(
 
             copyText =
                 `${text}\n\nStatewide rankings:\n` +
-                `• Registered voters: ${ordinal(totalRank)} of 67\n` +
-                `• Democratic share: ${ordinal(demRank)} of 67\n` +
-                `• Republican share: ${ordinal(repRank)} of 67\n` +
+                `• Registered voters: ${ordinal(totalRank)}-largest electorate in Pennsylvania\n` +
+                `• Democratic share: ${ordinal(demRank)}-highest among Pennsylvania's 67 counties\n` +
+                `• Republican share: ${ordinal(repRank)}-highest among Pennsylvania's 67 counties\n` +
                 `• Third-party/unaffiliated share: ` +
-                `${ordinal(thirdRank)} of 67\n` +
-                `• D-R margin order: ${ordinal(balanceRank)} of 67 from most Democratic`;
+                `${ordinal(thirdRank)}-highest among Pennsylvania's 67 counties\n` +
+                `• Registration margin: ${ordinal(balanceRank)}-most Democratic among Pennsylvania's 67 counties`;
 
             return;
         }
@@ -1502,6 +1720,9 @@ def build_dashboard(
                     <td>
                         ${shortEdge(county)}
                     </td>
+                    <td>
+                        ${shortPresidentialResult(county)}
+                    </td>
                 </tr>
             `;
         }).join("");
@@ -1514,16 +1735,130 @@ def build_dashboard(
         const groupSize =
             neighbors.length + 1;
 
+        const neighborDisplays =
+            neighbors.map(
+                ([, neighbor]) => neighbor.display
+            );
+
+        const neighborList =
+            neighborDisplays.length === 1
+                ? neighborDisplays[0]
+                : neighborDisplays.length === 2
+                    ? `${neighborDisplays[0]} and ` +
+                      `${neighborDisplays[1]}`
+                    : `${neighborDisplays.slice(0, -1).join(", ")}, ` +
+                      `and ${neighborDisplays.at(-1)}`;
+
+        const samePartyNeighbors =
+            neighbors.filter(
+                ([, neighbor]) =>
+                    neighbor.margin_party === data.margin_party
+            ).length;
+
+        const oppositePartyNeighbors =
+            neighbors.filter(
+                ([, neighbor]) =>
+                    neighbor.margin_party !== data.margin_party &&
+                    neighbor.margin_party !== "Even"
+            ).length;
+
+        let neighborObservation = "";
+
+        if (
+            data.margin_party !== "Even" &&
+            samePartyNeighbors === 0 &&
+            oppositePartyNeighbors === neighbors.length
+        ) {
+            neighborObservation =
+                `${data.display} is the only one of those counties ` +
+                `with a ${data.margin_party} registration advantage.`;
+        } else if (
+            moreRepublicanThan === neighbors.length
+        ) {
+            neighborObservation =
+                `${data.display} has a more Republican ` +
+                `registration balance than all ` +
+                `${neighbors.length} of its Pennsylvania ` +
+                `neighbors.`;
+        } else if (
+            moreDemocraticThan === neighbors.length
+        ) {
+            neighborObservation =
+                `${data.display} has a more Democratic ` +
+                `registration balance than all ` +
+                `${neighbors.length} of its Pennsylvania ` +
+                `neighbors.`;
+        }
+
+        const selectedPresidentialWinner =
+            data.presidential_winner;
+
+        const sameWinnerNeighbors =
+            neighbors.filter(
+                ([, neighbor]) =>
+                    neighbor.presidential_winner ===
+                    selectedPresidentialWinner
+            );
+
+        const otherWinner =
+            selectedPresidentialWinner === "Trump"
+                ? "Harris"
+                : "Trump";
+
+        const selectedWinnerName =
+            presidentialWinnerName(
+                selectedPresidentialWinner
+            );
+
+        const otherWinnerName =
+            presidentialWinnerName(otherWinner);
+
+        const sameWinnerDisplays =
+            sameWinnerNeighbors.map(
+                ([, neighbor]) => neighbor.display
+            );
+
+        const sameWinnerNeighborList =
+            sameWinnerDisplays.length === 1
+                ? sameWinnerDisplays[0]
+                : sameWinnerDisplays.length === 2
+                    ? `${sameWinnerDisplays[0]} and ` +
+                      `${sameWinnerDisplays[1]}`
+                    : sameWinnerDisplays.length > 2
+                        ? `${sameWinnerDisplays.slice(0, -1).join(", ")} ` +
+                          `and ${sameWinnerDisplays.at(-1)}`
+                        : "";
+
+        const otherWinnerNeighborCount =
+            neighbors.length - sameWinnerNeighbors.length;
+
+        let presidentialObservation = "";
+
+        if (sameWinnerNeighbors.length === neighbors.length) {
+            presidentialObservation =
+                `${selectedWinnerName} won ${data.display} and all ` +
+                `${neighbors.length} of its Pennsylvania neighbors in the ` +
+                `2024 presidential election.`;
+        } else if (sameWinnerNeighbors.length === 0) {
+            presidentialObservation =
+                `${selectedWinnerName} won ${data.display} in the 2024 ` +
+                `presidential election; ${otherWinnerName} won all ` +
+                `${neighbors.length} neighboring counties.`;
+        } else {
+            presidentialObservation =
+                `${selectedWinnerName} won ${data.display} and ` +
+                `${sameWinnerNeighborList} in the 2024 presidential election; ` +
+                `${otherWinnerName} won the other ` +
+                `${otherWinnerNeighborCount} neighboring ` +
+                `${otherWinnerNeighborCount === 1 ? "county" : "counties"}.`;
+        }
+
         const neighborNarrative =
-            `${data.display} shares a Pennsylvania ` +
-            `county boundary with ${neighbors.length} ` +
-            `${neighborWord}. Its Democratic-Republican ` +
-            `registration margin is more Democratic than ` +
-            `${moreDemocraticThan} of those counties and ` +
-            `more Republican than ${moreRepublicanThan}. ` +
-            `Its third-party/unaffiliated share ranks ` +
-            `${ordinal(localThirdRank)} among the ` +
-            `${groupSize}-county comparison group.`;
+            `${data.display} borders ${neighborList}.` +
+            (neighborObservation
+                ? ` ${neighborObservation}`
+                : "") +
+            ` ${presidentialObservation}`;
 
         neighborsBox.innerHTML = `
             <h3 class="analysis-subhead">
@@ -1544,6 +1879,7 @@ def build_dashboard(
                             <th>Rep.</th>
                             <th>Third/unaff.</th>
                             <th>D-R edge</th>
+                            <th>2024 president</th>
                         </tr>
                     </thead>
 
@@ -1561,26 +1897,15 @@ def build_dashboard(
             </p>
         `;
 
-        const neighborLines =
-            neighbors.map(
-                ([, neighbor]) =>
-                    `${neighbor.display}: ` +
-                    `${Number(neighbor.dem_pct).toFixed(2)}% Democratic, ` +
-                    `${Number(neighbor.rep_pct).toFixed(2)}% Republican, ` +
-                    `${Number(neighbor.third_pct).toFixed(2)}% third-party/unaffiliated, ` +
-                    `${shortEdge(neighbor)} point D-R edge`
-            ).join("\\n");
-
         copyText =
             `${text}\n\nStatewide rankings:\n` +
-            `• Registered voters: ${ordinal(totalRank)} of 67\n` +
-            `• Democratic share: ${ordinal(demRank)} of 67\n` +
-            `• Republican share: ${ordinal(repRank)} of 67\n` +
+            `• Registered voters: ${ordinal(totalRank)}-largest electorate in Pennsylvania\n` +
+            `• Democratic share: ${ordinal(demRank)}-highest among Pennsylvania's 67 counties\n` +
+            `• Republican share: ${ordinal(repRank)}-highest among Pennsylvania's 67 counties\n` +
             `• Third-party/unaffiliated share: ` +
-            `${ordinal(thirdRank)} of 67\n` +
-            `• D-R margin order: ${ordinal(balanceRank)} of 67 from most Democratic\n\n` +
-            `${neighborNarrative}\n\n` +
-            `Neighboring counties:\n${neighborLines}`;
+            `${ordinal(thirdRank)}-highest among Pennsylvania's 67 counties\n` +
+            `• Registration margin: ${ordinal(balanceRank)}-most Democratic among Pennsylvania's 67 counties\n\n` +
+            `Neighbor comparison:\n${neighborNarrative}`;
     }
 
     function renderAnalysis() {
@@ -2286,6 +2611,8 @@ if __name__ == "__main__":
 
     stats = load_stats()
 
+    presidential = load_presidential_results()
+
     metadata = load_metadata()
 
     counties = load_counties()
@@ -2298,6 +2625,11 @@ if __name__ == "__main__":
     merged = merge_data(
         counties,
         stats,
+    )
+
+    merged = merge_presidential_results(
+        merged,
+        presidential,
     )
 
     merged = calculate_map_metric(
@@ -2328,14 +2660,4 @@ if __name__ == "__main__":
     print(
         "\nDone."
     )
-
-
-
-
-
-
-
-
-
-
 
