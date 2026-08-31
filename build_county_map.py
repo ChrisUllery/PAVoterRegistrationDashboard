@@ -693,18 +693,20 @@ def build_map(merged):
     )
 
     fig.update_layout(
-        height=620,
+        height=500,
         dragmode=False,
 
         margin=dict(
             l=0,
             r=0,
             t=10,
-            b=85,
+            b=20,
         ),
 
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+
+        coloraxis_showscale=False,
 
         coloraxis_colorbar=dict(
             title="Registration balance",
@@ -779,6 +781,9 @@ def build_dashboard(
             "margin_party": statewide["margin_party"],
             "margin_count": int(statewide["margin_count"]),
             "margin_pct": float(statewide["margin_pct"]),
+            "signed_margin_pct": float(
+                statewide["dem_pct"] - statewide["rep_pct"]
+            ),
         }
     }
 
@@ -805,8 +810,45 @@ def build_dashboard(
             "margin_party": margin_party,
             "margin_count": abs(margin),
             "margin_pct": abs(float(row["dem_rep_margin_pct"])),
+            "signed_margin_pct": float(
+                row["dem_rep_margin_pct"]
+            ),
         }
 
+    neighbors_by_county = {}
+
+    for idx, row in county_stats.iterrows():
+        county_name = str(row["county"])
+        neighbors = []
+
+        for other_idx, other in county_stats.iterrows():
+            if idx == other_idx:
+                continue
+
+            shared_boundary = (
+                row.geometry.boundary
+                .intersection(other.geometry.boundary)
+            )
+
+            if (
+                not shared_boundary.is_empty
+                and shared_boundary.length > 1e-9
+            ):
+                neighbors.append(
+                    str(other["county"])
+                )
+
+        neighbors_by_county[county_name] = sorted(
+            neighbors
+        )
+
+    for county_name, neighbors in (
+        neighbors_by_county.items()
+    ):
+        if county_name in region_data:
+            region_data[county_name]["neighbors"] = (
+                neighbors
+            )
     region_data_json = json.dumps(
         region_data,
         ensure_ascii=False,
@@ -896,6 +938,722 @@ def build_dashboard(
 </script>
 """.replace("__REGION_DATA__", region_data_json)
 
+    analysis_css = """
+    .analysis-panel {
+        max-width: 1040px;
+        margin: 18px auto 0;
+        padding: 20px;
+        background: #ffffff;
+        border: 1px solid #d9e0e7;
+        border-radius: 12px;
+    }
+
+    .analysis-heading-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+
+    .analysis-heading-row h2 {
+        margin: 0;
+        font-size: 1.3rem;
+    }
+
+    .analysis-summary {
+        margin: 0 0 18px;
+        line-height: 1.6;
+    }
+
+    .analysis-subhead {
+        margin: 20px 0 10px;
+        font-size: 1.05rem;
+    }
+
+    .rank-grid {
+        display: grid;
+        grid-template-columns:
+            repeat(auto-fit, minmax(170px, 1fr));
+        gap: 10px;
+    }
+
+    .rank-item {
+        padding: 12px;
+        border: 1px solid #e0e5ea;
+        border-radius: 8px;
+        background: #f8fafc;
+    }
+
+    .rank-label {
+        display: block;
+        margin-bottom: 4px;
+        color: #5d6976;
+        font-size: 0.8rem;
+    }
+
+    .rank-value {
+        font-weight: 700;
+        line-height: 1.3;
+    }
+
+    .analysis-highlights {
+        margin: 8px 0 0;
+        padding-left: 22px;
+        line-height: 1.6;
+    }
+
+    .neighbor-intro {
+        line-height: 1.6;
+        margin: 0 0 12px;
+    }
+
+    .neighbor-note {
+        color: #5d6976;
+        font-size: 0.82rem;
+        margin: 8px 0 0;
+    }
+
+    .neighbor-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+    }
+
+    .neighbor-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.88rem;
+        white-space: nowrap;
+    }
+
+    .neighbor-table th,
+    .neighbor-table td {
+        padding: 9px 10px;
+        border-bottom: 1px solid #e0e5ea;
+        text-align: right;
+    }
+
+    .neighbor-table th:first-child,
+    .neighbor-table td:first-child {
+        text-align: left;
+    }
+
+    .neighbor-table th {
+        color: #5d6976;
+        font-size: 0.78rem;
+    }
+
+    .neighbor-table .selected-row {
+        font-weight: 700;
+        background: #f3f6f9;
+    }
+
+    .copy-analysis {
+        min-height: 44px;
+        padding: 9px 15px;
+        border: 1px solid #aeb8c2;
+        border-radius: 8px;
+        background: #ffffff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    .copy-analysis:hover {
+        background: #f4f6f8;
+    }
+
+    .copy-status {
+        min-height: 1em;
+        margin: 10px 0 0;
+        color: #5d6976;
+        font-size: 0.82rem;
+    }
+
+    @media (max-width: 700px) {
+        .analysis-panel {
+            padding: 15px;
+        }
+
+        .rank-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 430px) {
+        .rank-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    """
+
+    analysis_script = """
+<script>
+(() => {
+    const regionData = __REGION_DATA__;
+    const selector =
+        document.getElementById("region-select");
+
+    const title =
+        document.getElementById("analysis-title");
+    const summary =
+        document.getElementById("analysis-summary");
+    const comparison =
+        document.getElementById("analysis-comparison");
+    const neighborsBox =
+        document.getElementById("analysis-neighbors");
+    const copyButton =
+        document.getElementById("copy-analysis");
+    const copyStatus =
+        document.getElementById("copy-status");
+
+    if (
+        !selector ||
+        !title ||
+        !summary ||
+        !comparison ||
+        !neighborsBox ||
+        !copyButton
+    ) {
+        return;
+    }
+
+    const numberFormat =
+        new Intl.NumberFormat("en-US");
+
+    const countyEntries =
+        Object.entries(regionData).filter(
+            ([name]) => name !== "Statewide"
+        );
+
+    let copyText = "";
+
+    function escapeHtml(value) {
+        return String(value)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
+
+    function ordinal(number) {
+        const n = Number(number);
+        const mod100 = n % 100;
+
+        if (mod100 >= 11 && mod100 <= 13) {
+            return `${n}th`;
+        }
+
+        switch (n % 10) {
+            case 1:
+                return `${n}st`;
+            case 2:
+                return `${n}nd`;
+            case 3:
+                return `${n}rd`;
+            default:
+                return `${n}th`;
+        }
+    }
+
+    function rankDescending(metric, value) {
+        return 1 + countyEntries.filter(
+            ([, data]) =>
+                Number(data[metric]) >
+                Number(value)
+        ).length;
+    }
+
+    function partySubject(party) {
+        if (party === "Democratic") {
+            return "Democrats";
+        }
+
+        if (party === "Republican") {
+            return "Republicans";
+        }
+
+        return null;
+    }
+
+    function edgeSentence(data, statewide=false) {
+        if (Number(data.margin_count) === 0) {
+            return statewide
+                ? "Democratic and Republican registration is even statewide."
+                : "Democratic and Republican registration is even.";
+        }
+
+        const subject =
+            partySubject(data.margin_party);
+
+        const location =
+            statewide ? " statewide" : "";
+
+        return (
+            `${subject} hold a registration edge${location} ` +
+            `of ${numberFormat.format(data.margin_count)} voters, ` +
+            `or ${Number(data.margin_pct).toFixed(2)} ` +
+            `percentage points.`
+        );
+    }
+
+    function shortEdge(data) {
+        if (Number(data.margin_count) === 0) {
+            return "Even";
+        }
+
+        const letter =
+            data.margin_party === "Democratic"
+                ? "D"
+                : "R";
+
+        return (
+            `${letter} +` +
+            `${Number(data.margin_pct).toFixed(2)}`
+        );
+    }
+
+    function maxBy(metric) {
+        return countyEntries.reduce(
+            (best, current) =>
+                Number(current[1][metric]) >
+                Number(best[1][metric])
+                    ? current
+                    : best
+        );
+    }
+
+    function closestMargin() {
+        return countyEntries.reduce(
+            (best, current) =>
+                Math.abs(
+                    Number(
+                        current[1].signed_margin_pct
+                    )
+                ) <
+                Math.abs(
+                    Number(
+                        best[1].signed_margin_pct
+                    )
+                )
+                    ? current
+                    : best
+        );
+    }
+
+    function renderStatewide(data) {
+        title.textContent = "Statewide analysis";
+
+        const text =
+            `Pennsylvania has ` +
+            `${numberFormat.format(data.total)} ` +
+            `registered voters. Democrats account for ` +
+            `${numberFormat.format(data.dem)} voters ` +
+            `(${Number(data.dem_pct).toFixed(2)}%), ` +
+            `Republicans account for ` +
+            `${numberFormat.format(data.rep)} ` +
+            `(${Number(data.rep_pct).toFixed(2)}%), ` +
+            `and ${numberFormat.format(data.third)} ` +
+            `voters (${Number(data.third_pct).toFixed(2)}%) ` +
+            `are registered with a third party or are ` +
+            `unaffiliated. ${edgeSentence(data, true)}`;
+
+        summary.textContent = text;
+
+        const largest = maxBy("total");
+        const demHigh = maxBy("dem_pct");
+        const repHigh = maxBy("rep_pct");
+        const thirdHigh = maxBy("third_pct");
+        const closest = closestMargin();
+
+        comparison.innerHTML = `
+            <h3 class="analysis-subhead">
+                County highlights
+            </h3>
+
+            <ul class="analysis-highlights">
+                <li>
+                    <strong>Largest registered electorate:</strong>
+                    ${escapeHtml(largest[1].display)}
+                    (${numberFormat.format(largest[1].total)} voters)
+                </li>
+
+                <li>
+                    <strong>Highest Democratic registration share:</strong>
+                    ${escapeHtml(demHigh[1].display)}
+                    (${Number(demHigh[1].dem_pct).toFixed(2)}%)
+                </li>
+
+                <li>
+                    <strong>Highest Republican registration share:</strong>
+                    ${escapeHtml(repHigh[1].display)}
+                    (${Number(repHigh[1].rep_pct).toFixed(2)}%)
+                </li>
+
+                <li>
+                    <strong>Highest • Third-party/unaffiliated share:</strong>
+                    ${escapeHtml(thirdHigh[1].display)}
+                    (${Number(thirdHigh[1].third_pct).toFixed(2)}%)
+                </li>
+
+                <li>
+                    <strong>Closest Democratic-Republican split:</strong>
+                    ${escapeHtml(closest[1].display)}
+                    (${shortEdge(closest[1])} points)
+                </li>
+            </ul>
+        `;
+
+        neighborsBox.innerHTML = "";
+
+        copyText =
+            `${text}\n\nCounty highlights:\n` +
+            `Largest registered electorate: ` +
+            `${largest[1].display} ` +
+            `(${numberFormat.format(largest[1].total)} voters)\n` +
+            `Highest Democratic registration share: ` +
+            `${demHigh[1].display} ` +
+            `(${Number(demHigh[1].dem_pct).toFixed(2)}%)\n` +
+            `Highest Republican registration share: ` +
+            `${repHigh[1].display} ` +
+            `(${Number(repHigh[1].rep_pct).toFixed(2)}%)\n` +
+            `Highest • Third-party/unaffiliated share: ` +
+            `${thirdHigh[1].display} ` +
+            `(${Number(thirdHigh[1].third_pct).toFixed(2)}%)\n` +
+            `Closest Democratic-Republican split: ` +
+            `${closest[1].display} ` +
+            `(${shortEdge(closest[1])} points)`;
+    }
+
+    function renderCounty(name, data) {
+        title.textContent =
+            `${data.display} analysis`;
+
+        const text =
+            `${data.display} has ` +
+            `${numberFormat.format(data.total)} ` +
+            `registered voters. Democrats account for ` +
+            `${numberFormat.format(data.dem)} voters ` +
+            `(${Number(data.dem_pct).toFixed(2)}%), ` +
+            `Republicans account for ` +
+            `${numberFormat.format(data.rep)} ` +
+            `(${Number(data.rep_pct).toFixed(2)}%), ` +
+            `and ${numberFormat.format(data.third)} ` +
+            `voters (${Number(data.third_pct).toFixed(2)}%) ` +
+            `are registered with a third party or are ` +
+            `unaffiliated. ${edgeSentence(data)}`;
+
+        summary.textContent = text;
+
+        const totalRank =
+            rankDescending("total", data.total);
+
+        const demRank =
+            rankDescending(
+                "dem_pct",
+                data.dem_pct
+            );
+
+        const repRank =
+            rankDescending(
+                "rep_pct",
+                data.rep_pct
+            );
+
+        const thirdRank =
+            rankDescending(
+                "third_pct",
+                data.third_pct
+            );
+
+        const balanceRank =
+            rankDescending(
+                "signed_margin_pct",
+                data.signed_margin_pct
+            );
+
+        comparison.innerHTML = `
+            <h3 class="analysis-subhead">
+                How this county compares statewide
+            </h3>
+
+            <ul class="analysis-highlights">
+                <li>
+                    <strong>Registered voters:</strong>
+                    ${ordinal(totalRank)} of 67
+                </li>
+                <li>
+                    <strong>Democratic share:</strong>
+                    ${ordinal(demRank)} of 67
+                </li>
+                <li>
+                    <strong>Republican share:</strong>
+                    ${ordinal(repRank)} of 67
+                </li>
+                <li>
+                    <strong>Third-party/unaffiliated share:</strong>
+                    ${ordinal(thirdRank)} of 67
+                </li>
+                <li>
+                    <strong>D-R margin order:</strong>
+                    ${ordinal(balanceRank)} of 67
+                    from most Democratic
+                </li>
+            </ul>
+        `;
+
+        const neighborNames =
+            Array.isArray(data.neighbors)
+                ? data.neighbors
+                : [];
+
+        const neighbors =
+            neighborNames
+                .map(neighborName => [
+                    neighborName,
+                    regionData[neighborName]
+                ])
+                .filter(([, neighborData]) =>
+                    Boolean(neighborData)
+                );
+
+        if (!neighbors.length) {
+            neighborsBox.innerHTML = `
+                <h3 class="analysis-subhead">
+                    Pennsylvania neighbors
+                </h3>
+                <p class="neighbor-intro">
+                    No Pennsylvania neighboring counties
+                    were identified.
+                </p>
+            `;
+
+            copyText =
+                `${text}\n\nStatewide rankings:\n` +
+                `• Registered voters: ${ordinal(totalRank)} of 67\n` +
+                `• Democratic share: ${ordinal(demRank)} of 67\n` +
+                `• Republican share: ${ordinal(repRank)} of 67\n` +
+                `• Third-party/unaffiliated share: ` +
+                `${ordinal(thirdRank)} of 67\n` +
+                `• D-R margin order: ${ordinal(balanceRank)} of 67 from most Democratic`;
+
+            return;
+        }
+
+        const selectedMargin =
+            Number(data.signed_margin_pct);
+
+        const moreDemocraticThan =
+            neighbors.filter(
+                ([, neighbor]) =>
+                    selectedMargin >
+                    Number(
+                        neighbor.signed_margin_pct
+                    )
+            ).length;
+
+        const moreRepublicanThan =
+            neighbors.filter(
+                ([, neighbor]) =>
+                    selectedMargin <
+                    Number(
+                        neighbor.signed_margin_pct
+                    )
+            ).length;
+
+        const localGroup = [
+            [name, data],
+            ...neighbors
+        ];
+
+        const localThirdRank =
+            1 + localGroup.filter(
+                ([, county]) =>
+                    Number(county.third_pct) >
+                    Number(data.third_pct)
+            ).length;
+
+        const rows = [
+            [name, data],
+            ...neighbors
+        ].map(([countyName, county]) => {
+            const selected =
+                countyName === name;
+
+            return `
+                <tr class="${selected ? "selected-row" : ""}">
+                    <td>
+                        ${escapeHtml(county.display)}
+                    </td>
+                    <td>
+                        ${numberFormat.format(county.total)}
+                    </td>
+                    <td>
+                        ${Number(county.dem_pct).toFixed(2)}%
+                    </td>
+                    <td>
+                        ${Number(county.rep_pct).toFixed(2)}%
+                    </td>
+                    <td>
+                        ${Number(county.third_pct).toFixed(2)}%
+                    </td>
+                    <td>
+                        ${shortEdge(county)}
+                    </td>
+                </tr>
+            `;
+        }).join("");
+
+        const neighborWord =
+            neighbors.length === 1
+                ? "county"
+                : "counties";
+
+        const groupSize =
+            neighbors.length + 1;
+
+        const neighborNarrative =
+            `${data.display} shares a Pennsylvania ` +
+            `county boundary with ${neighbors.length} ` +
+            `${neighborWord}. Its Democratic-Republican ` +
+            `registration margin is more Democratic than ` +
+            `${moreDemocraticThan} of those counties and ` +
+            `more Republican than ${moreRepublicanThan}. ` +
+            `Its third-party/unaffiliated share ranks ` +
+            `${ordinal(localThirdRank)} among the ` +
+            `${groupSize}-county comparison group.`;
+
+        neighborsBox.innerHTML = `
+            <h3 class="analysis-subhead">
+                Compared with neighboring counties
+            </h3>
+
+            <p class="neighbor-intro">
+                ${escapeHtml(neighborNarrative)}
+            </p>
+
+            <div class="neighbor-table-wrap">
+                <table class="neighbor-table">
+                    <thead>
+                        <tr>
+                            <th>County</th>
+                            <th>Registered</th>
+                            <th>Dem.</th>
+                            <th>Rep.</th>
+                            <th>Third/unaff.</th>
+                            <th>D-R edge</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${rows}
+                    </tbody>
+                </table>
+            </div>
+
+            <p class="neighbor-note">
+                Pennsylvania neighbors are determined
+                from the same U.S. Census county
+                boundaries used for the map.
+                Out-of-state counties are not included.
+            </p>
+        `;
+
+        const neighborLines =
+            neighbors.map(
+                ([, neighbor]) =>
+                    `${neighbor.display}: ` +
+                    `${Number(neighbor.dem_pct).toFixed(2)}% Democratic, ` +
+                    `${Number(neighbor.rep_pct).toFixed(2)}% Republican, ` +
+                    `${Number(neighbor.third_pct).toFixed(2)}% third-party/unaffiliated, ` +
+                    `${shortEdge(neighbor)} point D-R edge`
+            ).join("\\n");
+
+        copyText =
+            `${text}\n\nStatewide rankings:\n` +
+            `• Registered voters: ${ordinal(totalRank)} of 67\n` +
+            `• Democratic share: ${ordinal(demRank)} of 67\n` +
+            `• Republican share: ${ordinal(repRank)} of 67\n` +
+            `• Third-party/unaffiliated share: ` +
+            `${ordinal(thirdRank)} of 67\n` +
+            `• D-R margin order: ${ordinal(balanceRank)} of 67 from most Democratic\n\n` +
+            `${neighborNarrative}\n\n` +
+            `Neighboring counties:\n${neighborLines}`;
+    }
+
+    function renderAnalysis() {
+        const name = selector.value;
+        const data = regionData[name];
+
+        if (!data) {
+            return;
+        }
+
+        if (name === "Statewide") {
+            renderStatewide(data);
+        } else {
+            renderCounty(name, data);
+        }
+    }
+
+    async function copyAnalysis() {
+        if (!copyText) {
+            return;
+        }
+
+        try {
+            if (
+                navigator.clipboard &&
+                window.isSecureContext
+            ) {
+                await navigator.clipboard.writeText(
+                    copyText
+                );
+            } else {
+                const textarea =
+                    document.createElement("textarea");
+
+                textarea.value = copyText;
+                textarea.style.position = "absolute";
+                textarea.style.left = "-9999px";
+
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand("copy");
+                textarea.remove();
+            }
+
+            copyStatus.textContent =
+                "Analysis copied.";
+        } catch (error) {
+            copyStatus.textContent =
+                "Could not copy automatically.";
+        }
+
+        window.setTimeout(() => {
+            copyStatus.textContent = "";
+        }, 2500);
+    }
+
+    selector.addEventListener(
+        "change",
+        renderAnalysis
+    );
+
+    copyButton.addEventListener(
+        "click",
+        copyAnalysis
+    );
+
+    renderAnalysis();
+})();
+</script>
+""".replace(
+        "__REGION_DATA__",
+        region_data_json,
+    )
     html = f"""
 <!DOCTYPE html>
 
@@ -980,7 +1738,7 @@ body {{
 
 .summary-card {{
     background: white;
-    border: 1px solid #d9dee5;
+    border: 0;
     border-radius: 10px;
     padding: 15px 16px;
 }}
@@ -1005,7 +1763,7 @@ body {{
 
 .explainer {{
     background: #ffffff;
-    border: 1px solid #d9dee5;
+    border: 0;
     border-radius: 10px;
     padding: 16px 18px;
     margin-bottom: 20px;
@@ -1027,7 +1785,7 @@ body {{
     margin: 0 auto;
 
     background: white;
-    border: 1px solid #d9dee5;
+    border: 0;
     border-radius: 12px;
 
     padding: 18px 18px 10px;
@@ -1061,8 +1819,111 @@ body {{
         clamp(
             360px,
             55vw,
-            620px
+            500px
         ) !important;
+}}
+
+.map-content {{
+    position: relative;
+    width: 100%;
+}}
+
+.map-legend {{
+    position: absolute;
+    right: -22px;
+    top: 15%;
+    transform: none;
+    z-index: 3;
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+
+    padding: 7px 6px;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+
+    pointer-events: none;
+}}
+
+.map-legend-title {{
+    margin-bottom: 7px;
+    font-size: 0.66rem;
+    font-weight: 600;
+    text-align: center;
+    white-space: nowrap;
+}}
+
+.map-legend-scale {{
+    display: flex;
+    gap: 6px;
+    height: 250px;
+}}
+
+.map-legend-bar {{
+    width: 10px;
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(
+        to bottom,
+        {BLUE} 0%,
+        {PURPLE} 50%,
+        {RED} 100%
+    );
+}}
+
+.map-legend-labels {{
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    font-size: 0.66rem;
+    line-height: 1;
+    white-space: nowrap;
+}}
+
+@media (max-width: 700px) {{
+
+    .map-legend {{
+        position: static;
+        transform: none;
+
+        width: min(92%, 520px);
+        margin: 0 auto 6px;
+        padding: 0;
+
+        background: transparent;
+        border: 0;
+    }}
+
+    .map-legend-title {{
+        margin-bottom: 5px;
+    }}
+
+    .map-legend-scale {{
+        width: 100%;
+        height: auto;
+        flex-direction: column;
+        gap: 5px;
+    }}
+
+    .map-legend-bar {{
+        width: 100%;
+        height: 12px;
+        background: linear-gradient(
+            to right,
+            {RED} 0%,
+            {PURPLE} 50%,
+            {BLUE} 100%
+        );
+    }}
+
+    .map-legend-labels {{
+        width: 100%;
+        flex-direction: row-reverse;
+        justify-content: space-between;
+        font-size: 0.66rem;
+    }}
 }}
 
 .methodology {{
@@ -1131,6 +1992,7 @@ body {{
 }}
 
 {selector_css}
+{analysis_css}
 </style>
 
 </head>
@@ -1156,6 +2018,75 @@ body {{
         </p>
 
     </header>
+
+
+    <section class="explainer">
+
+        <h2>
+            How to read the map
+        </h2>
+
+        <p>
+            Blue counties have a Democratic
+            registration advantage and red counties
+            have a Republican advantage. Counties
+            closer to purple have a more balanced
+            Democratic-Republican registration split
+            or a larger share of third-party and
+            unaffiliated voters. Hover over a county
+            for the actual registration totals and
+            Democratic-Republican margin.
+        </p>
+
+    </section>
+
+
+    <section class="map-panel">
+
+        <div class="map-header">
+
+            <h2>
+                County registration balance
+            </h2>
+
+            <p>
+                Color shows registration balance;
+                it does not represent election results
+                or a forecast.
+            </p>
+
+        </div>
+
+        <div class="map-content">
+
+            <div class="map-wrap">
+                {map_html}
+            </div>
+
+            <div
+                class="map-legend"
+                aria-label="Registration balance legend"
+            >
+                <div class="map-legend-title">
+                    Registration balance
+                </div>
+
+                <div class="map-legend-scale">
+                    <div class="map-legend-bar"></div>
+
+                    <div class="map-legend-labels">
+                        <span>Strong D</span>
+                        <span>D lean</span>
+                        <span>Even</span>
+                        <span>R lean</span>
+                        <span>Strong R</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </section>
 
 
     <section class="region-selector" aria-label="Registration area">
@@ -1255,49 +2186,43 @@ body {{
     </section>
 
 
-    <section class="explainer">
+    <section
+        class="analysis-panel"
+        aria-labelledby="analysis-title"
+    >
 
-        <h2>
-            How to read the map
-        </h2>
+        <div class="analysis-heading-row">
 
-        <p>
-            Blue counties have a Democratic
-            registration advantage and red counties
-            have a Republican advantage. Counties
-            closer to purple have a more balanced
-            Democratic-Republican registration split
-            or a larger share of third-party and
-            unaffiliated voters. Hover over a county
-            for the actual registration totals and
-            Democratic-Republican margin.
-        </p>
-
-    </section>
-
-
-    <section class="map-panel">
-
-        <div class="map-header">
-
-            <h2>
-                County registration balance
+            <h2 id="analysis-title">
+                Statewide analysis
             </h2>
 
-            <p>
-                Color shows registration balance;
-                it does not represent election results
-                or a forecast.
-            </p>
+            <button
+                id="copy-analysis"
+                class="copy-analysis"
+                type="button"
+            >
+                Copy analysis
+            </button>
 
         </div>
 
-        <div class="map-wrap">
-            {map_html}
-        </div>
+        <p
+            id="analysis-summary"
+            class="analysis-summary"
+        ></p>
+
+        <div id="analysis-comparison"></div>
+
+        <div id="analysis-neighbors"></div>
+
+        <p
+            id="copy-status"
+            class="copy-status"
+            aria-live="polite"
+        ></p>
 
     </section>
-
 
     <section class="methodology">
 
@@ -1332,6 +2257,7 @@ body {{
 </main>
 
 {selector_script}
+{analysis_script}
 
 </body>
 
@@ -1402,6 +2328,12 @@ if __name__ == "__main__":
     print(
         "\nDone."
     )
+
+
+
+
+
+
 
 
 
