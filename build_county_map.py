@@ -1979,12 +1979,26 @@ def build_dashboard(
         "__REGION_DATA__",
         region_data_json,
     )
+    analytics_html = """
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-1N046QGCDY"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-1N046QGCDY');
+</script>
+"""
+
     html = f"""
 <!DOCTYPE html>
 
 <html lang="en">
 
 <head>
+
+{analytics_html}
 
 <meta charset="utf-8">
 
