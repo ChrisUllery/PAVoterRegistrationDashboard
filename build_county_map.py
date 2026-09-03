@@ -1117,7 +1117,21 @@ def build_dashboard(
             `${numberFormat.format(data.margin_count)} voters \u00b7 ${data.margin_pct.toFixed(2)} points`;
     }
 
-    selector.addEventListener("change", updateCards);
+    selector.addEventListener("change", () => {
+        updateCards();
+
+        const data = regionData[selector.value];
+
+        if (
+            data &&
+            data.display !== "Statewide" &&
+            typeof gtag === "function"
+        ) {
+            gtag("event", "jurisdiction_view", {
+                jurisdiction: data.display
+            });
+        }
+    });
 })();
 </script>
 """.replace("__REGION_DATA__", region_data_json)
@@ -1969,7 +1983,20 @@ def build_dashboard(
 
     copyButton.addEventListener(
         "click",
-        copyAnalysis
+        () => {
+            copyAnalysis();
+
+            const data = regionData[selector.value];
+
+            if (
+                data &&
+                typeof gtag === "function"
+            ) {
+                gtag("event", "copy_analysis", {
+                    jurisdiction: data.display
+                });
+            }
+        }
     );
 
     renderAnalysis();
